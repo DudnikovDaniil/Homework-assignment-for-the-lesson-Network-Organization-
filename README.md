@@ -6,6 +6,7 @@
 
 1. [Домашнее задание «Организация сети»](#домашнее-задание-организация-сети)
 2. [Домашнее задание «Вычислительные мощности. Балансировщики нагрузки»](#домашнее-задание-вычислительные-мощности-балансировщики-нагрузки)
+3. [Домашнее задание «Безопасность в облачных провайдерах»](#домашнее-задание-безопасность-в-облачных-провайдерах)
 
 ---
 ## Задание 1. Yandex Cloud
@@ -551,3 +552,93 @@ resource "yandex_lb_network_load_balancer" "lamp_nlb" {
 ![failover recover](screenshots/11-failover-recover.png)
 
 ---
+
+
+---
+
+# Домашнее задание «Безопасность в облачных провайдерах»
+
+## Задание 1. Yandex Cloud
+
+### Что сделано (обязательная часть)
+
+- Создан **KMS-ключ** `crocodile-bucket-key` (алгоритм AES_128, ротация 1 год).
+- Бакет `dudnikov-daniil-crocodile-2026-09-27` **зашифрован** этим ключом через `server_side_encryption_configuration`.
+- Все новые объекты в бакете автоматически шифруются по алгоритму `aws:kms`.
+- Сервисному аккаунту `terraform-sa` выдана роль `kms.keys.encrypterDecrypter`.
+
+### Структура репозитория (часть 3)
+
+| Файл | Назначение |
+|------|-----------|
+| `kms.tf` | KMS-ключ для шифрования бакета |
+| `storage.tf` | Дополнен блоком `server_side_encryption_configuration` |
+| `outputs.tf` | Дополнен: `kms_key_id` |
+
+### Тексты манифестов
+
+#### kms.tf
+
+```hcl
+# KMS-ключ для шифрования бакета
+resource "yandex_kms_symmetric_key" "crocodile_key" {
+  name              = "crocodile-bucket-key"
+  description       = "Ключ для шифрования содержимого бакета с крокодилом"
+  default_algorithm = "AES_128"
+  rotation_period   = "8760h"
+
+  lifecycle {
+    prevent_destroy = false
+  }
+}
+```
+
+#### storage.tf (фрагмент — шифрование бакета)
+
+```hcl
+resource "yandex_storage_bucket" "crocodile" {
+  bucket        = var.bucket_name
+  force_destroy = true
+
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        kms_master_key_id = yandex_kms_symmetric_key.crocodile_key.id
+        sse_algorithm     = "aws:kms"
+      }
+    }
+  }
+}
+```
+
+### Результаты (обязательная часть)
+
+#### 1. KMS-ключ создан
+
+Ключ `crocodile-bucket-key` (`id = abj7im51fv2ee05gun55`) в статусе `ACTIVE`, алгоритм `AES_128`, ротация раз в год.
+
+![kms key](screenshots/12-kms-key.png)
+
+#### 2. Бакет зашифрован
+
+Вывод `terraform state show yandex_storage_bucket.crocodile` подтверждает, что к бакету применена конфигурация `server_side_encryption_configuration` с ключом `abj7im51fv2ee05gun55`.
+
+![bucket encrypted](screenshots/13-bucket-encrypted.png)
+
+---
+
+### Часть 2 (со звёздочкой) — HTTPS-статический сайт
+
+**Не выполнялась по объективным причинам.**
+
+Для создания статического сайта в Object Storage с HTTPS требуется:
+1. Собственный публичный домен.
+2. Пройденная идентификация администратора домена через Госуслуги — с 01.09.2026 это обязательное требование для доменов `.ru`.
+
+Домен **`dudnikov-alligator.ru`** был приобретён на Reg.ru (оплачен до 28.09.2027), однако процедура **идентификации администратора через Госуслуги занимает несколько дней** и на момент сдачи работы завершена не была. Без идентификации регистратор блокирует управление делегированием и DNS-записями домена, что делает невозможным привязку домена к бакету и выпуск HTTPS-сертификата.
+
+![domain purchased](screenshots/14-domain-purchased.png)
+
+Обязательная часть задания (создание KMS-ключа и шифрование бакета) выполнена полностью.
+
+

@@ -32,3 +32,8 @@ output "nlb_ip" {
   ][0][0]
   description = "Публичный IP сетевого балансировщика"
 }
+
+output "kms_key_id" {
+  value       = yandex_kms_symmetric_key.crocodile_key.id
+  description = "ID KMS-ключа, которым зашифрован бакет"
+}

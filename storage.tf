@@ -1,7 +1,17 @@
-# Бакет Object Storage
+# Бакет Object Storage с шифрованием через KMS
 resource "yandex_storage_bucket" "crocodile" {
   bucket        = var.bucket_name
   force_destroy = true
+
+  # Шифрование объектов по умолчанию через KMS
+  server_side_encryption_configuration {
+    rule {
+      apply_server_side_encryption_by_default {
+        kms_master_key_id = yandex_kms_symmetric_key.crocodile_key.id
+        sse_algorithm     = "aws:kms"
+      }
+    }
+  }
 }
 
 # Публичный доступ к бакету на чтение
