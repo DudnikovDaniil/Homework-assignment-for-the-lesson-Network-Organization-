@@ -1,0 +1,60 @@
+# ===== Terraform =====
+# Локальный кеш провайдеров и модулей
+.terraform/
+.terraform.lock.hcl
+
+# Файлы состояния Terraform
+*.tfstate
+*.tfstate.*
+*.tfstate.backup
+
+# Файлы плана
+*.tfplan
+*.plan
+
+# Crash-логи Terraform
+crash.log
+crash.*.log
+
+# Переменные с секретами
+*.tfvars
+*.tfvars.json
+!example.tfvars
+
+# Override-файлы
+override.tf
+override.tf.json
+*_override.tf
+*_override.tf.json
+
+# CLI-конфиг
+.terraformrc
+terraform.rc
+
+# ===== Секреты Yandex Cloud =====
+key.json
+*.key.json
+service_account_key.json
+
+# ===== SSH-ключи  =====
+*.pem
+*.pub
+id_rsa*
+id_ed25519*
+
+# ===== Редакторы =====
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# ===== ОС =====
+.DS_Store
+Thumbs.db
+
+# ===== Логи =====
+*.log
+
+# ===== Прочее =====
+.env
+.env.local
