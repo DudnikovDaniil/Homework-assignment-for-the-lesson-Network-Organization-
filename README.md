@@ -2,6 +2,12 @@
 
 **Выполнил:** Дудников Даниил
 
+## Оглавление
+
+1. [Домашнее задание «Организация сети»](#домашнее-задание-организация-сети)
+2. [Домашнее задание «Вычислительные мощности. Балансировщики нагрузки»](#домашнее-задание-вычислительные-мощности-балансировщики-нагрузки)
+
+---
 ## Задание 1. Yandex Cloud
 
 ### Что сделано
@@ -325,3 +331,223 @@ Firefox запущен локально, но его трафик завёрну
 
 ---
 
+
+# Домашнее задание «Вычислительные мощности. Балансировщики нагрузки»
+
+## Задание 1. Yandex Cloud
+
+### Что сделано
+
+- Создан **бакет Object Storage** `dudnikov-daniil-crocodile-2026-09-27` с картинкой.
+- Картинка доступна из интернета по прямой ссылке.
+- Создана **Instance Group** из 3 ВМ с LAMP (Ubuntu 22.04 + Apache).
+- Через `user-data` (cloud-init) на каждой ВМ ставится LAMP и создаётся стартовая страница со ссылкой на крокодила.
+- Настроен **health check** (HTTP, порт 80, `/`).
+- Создан **Network Load Balancer** `lamp-nlb`, подключённый к target group Instance Group.
+- Проверена **отказоустойчивость**: удалили одну ВМ — сайт продолжил работать, группа восстановила состав.
+
+### Структура репозитория (часть 2)
+
+| Файл | Назначение |
+|------|-----------|
+| `storage.tf` | Бакет Object Storage + картинка + публичный доступ |
+| `cloud-init.yaml` | Cloud-init для ВМ: LAMP + index.html |
+| `instance-group.tf` | Instance Group из 3 ВМ с LAMP и health check |
+| `nlb.tf` | Network Load Balancer на 80 порт |
+| `outputs.tf` | Дополнен: `bucket_name`, `crocodile_url`, `nlb_ip` |
+| `variables.tf` | Дополнен: `bucket_name`, `yc_access_key`, `yc_secret_key`, `lamp_image_id` |
+
+### Тексты манифестов
+
+#### storage.tf
+
+```hcl
+resource "yandex_storage_bucket" "crocodile" {
+  bucket        = var.bucket_name
+  force_destroy = true
+}
+
+resource "yandex_storage_bucket_grant" "crocodile_grant" {
+  bucket = yandex_storage_bucket.crocodile.bucket
+
+  grant {
+    type        = "Group"
+    permissions = ["READ"]
+    uri         = "http://acs.amazonaws.com/groups/global/AllUsers"
+  }
+}
+
+resource "yandex_storage_object" "crocodile_image" {
+  bucket       = yandex_storage_bucket.crocodile.bucket
+  key          = "crocodile.jpg"
+  source       = "crocodile.jpg"
+  acl          = "public-read"
+  content_type = "image/jpeg"
+
+  depends_on = [yandex_storage_bucket_grant.crocodile_grant]
+}
+```
+
+#### cloud-init.yaml
+
+```yaml
+#cloud-config
+package_update: true
+packages:
+  - apache2
+  - php
+  - libapache2-mod-php
+
+runcmd:
+  - systemctl enable apache2
+  - systemctl start apache2
+  - |
+    cat > /var/www/html/index.html <<'EOF'
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head><meta charset="UTF-8"><title>Netology Crocodile</title></head>
+    <body>
+      <h1> Netology Crocodile Server</h1>
+      <img src="https://storage.yandexcloud.net/dudnikov-daniil-crocodile-2026-09-27/crocodile.jpg" alt="Crocodile">
+    </body>
+    </html>
+    EOF
+```
+
+#### instance-group.tf
+
+```hcl
+resource "yandex_compute_instance_group" "lamp_group" {
+  name               = "lamp-group"
+  folder_id          = var.folder_id
+  service_account_id = "aje8h986adoqhodic3ph"
+
+  instance_template {
+    platform_id = "standard-v3"
+
+    resources {
+      cores  = 2
+      memory = 2
+    }
+
+    boot_disk {
+      initialize_params {
+        image_id = var.lamp_image_id
+        size     = 10
+      }
+    }
+
+    network_interface {
+      network_id = yandex_vpc_network.main.id
+      subnet_ids = [yandex_vpc_subnet.public.id]
+      nat        = true
+    }
+
+    metadata = {
+      ssh-keys  = "ubuntu:${var.ssh_public_key}"
+      user-data = file("cloud-init.yaml")
+    }
+  }
+
+  scale_policy {
+    fixed_scale {
+      size = 3
+    }
+  }
+
+  allocation_policy {
+    zones = [var.zone]
+  }
+
+  deploy_policy {
+    max_unavailable = 1
+    max_expansion   = 2
+  }
+
+  health_check {
+    interval            = 10
+    timeout             = 5
+    healthy_threshold   = 2
+    unhealthy_threshold = 3
+    http_options {
+      port = 80
+      path = "/"
+    }
+  }
+
+  load_balancer {
+    target_group_name = "lamp-target-group"
+  }
+}
+```
+
+#### nlb.tf
+
+```hcl
+resource "yandex_lb_network_load_balancer" "lamp_nlb" {
+  name = "lamp-nlb"
+
+  listener {
+    name = "http-listener"
+    port = 80
+
+    external_address_spec {
+      ip_version = "ipv4"
+    }
+  }
+
+  attached_target_group {
+    target_group_id = yandex_compute_instance_group.lamp_group.load_balancer[0].target_group_id
+
+    healthcheck {
+      name = "http-healthcheck"
+      http_options {
+        port = 80
+        path = "/"
+      }
+      interval = 10
+      timeout  = 5
+    }
+  }
+}
+```
+
+### Результаты
+
+#### 1. Бакет Object Storage с картинкой
+
+`https://storage.yandexcloud.net/dudnikov-daniil-crocodile-2026-09-27/crocodile.jpg`
+
+![bucket crocodile](screenshots/06-bucket-crocodile.png)
+
+#### 2. Instance Group из 3 ВМ с LAMP
+
+Три ВМ в статусе `RUNNING_ACTUAL`, target group и health check настроены.
+
+![instance group](screenshots/07-instance-group.png)
+
+#### 3. Сайт через Network Load Balancer
+
+`http://81.26.184.161/` — страница с крокодилом и hostname одной из ВМ.
+
+![nlb site](screenshots/08-nlb-site.png)
+
+#### 4. Балансировка между тремя ВМ
+
+При многократных запросах hostname меняется: `...-yjyf`, `...-alyw`, `...-ewaz`.
+
+![nlb roundrobin](screenshots/09-nlb-roundrobin.png)
+
+#### 5. Проверка отказоустойчивости
+
+Одна ВМ удалена вручную. Сайт продолжил отвечать `HTTP 200`.
+
+![failover](screenshots/10-failover.png)
+
+#### 6. Восстановление Instance Group
+
+Через ~1 минуту группа создала новую ВМ вместо удалённой.
+
+![failover recover](screenshots/11-failover-recover.png)
+
+---

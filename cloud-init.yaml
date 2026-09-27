@@ -1,0 +1,38 @@
+#cloud-config
+package_update: true
+package_upgrade: false
+packages:
+  - apache2
+  - php
+  - libapache2-mod-php
+
+runcmd:
+  - systemctl enable apache2
+  - systemctl start apache2
+  - |
+    cat > /var/www/html/index.html <<'EOF'
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+      <meta charset="UTF-8">
+      <title>Netology Crocodile</title>
+      <style>
+        body { font-family: sans-serif; text-align: center; background: #f0f8ff; padding: 40px; }
+        h1 { color: #2E7D32; }
+        img { max-width: 400px; border-radius: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.2); }
+        .footer { margin-top: 30px; color: #666; font-size: 14px; }
+      </style>
+    </head>
+    <body>
+      <h1> Netology Crocodile Server</h1>
+      <p>Это стартовая страница ВМ из Instance Group.</p>
+      <img src="https://storage.yandexcloud.net/dudnikov-daniil-crocodile-2026-09-27/crocodile.jpg" alt="Crocodile">
+      <div class="footer">
+        Hostname: <b>HOSTNAME_PLACEHOLDER</b><br>
+        Served by LAMP stack (Ubuntu 22.04)
+      </div>
+    </body>
+    </html>
+    EOF
+  - hostname > /tmp/hostname.txt
+  - sed -i "s/HOSTNAME_PLACEHOLDER/$(hostname)/" /var/www/html/index.html
