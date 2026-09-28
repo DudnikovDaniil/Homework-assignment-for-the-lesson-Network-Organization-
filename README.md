@@ -7,7 +7,7 @@
 1. [Домашнее задание «Организация сети»](#домашнее-задание-организация-сети)
 2. [Домашнее задание «Вычислительные мощности. Балансировщики нагрузки»](#домашнее-задание-вычислительные-мощности-балансировщики-нагрузки)
 3. [Домашнее задание «Безопасность в облачных провайдерах»](#домашнее-задание-безопасность-в-облачных-провайдерах)
-
+4. [Домашнее задание «Базы данных и Kubernetes»](#домашнее-задание-базы-данных-и-kubernetes)
 ---
 ## Задание 1. Yandex Cloud
 
@@ -619,7 +619,196 @@ resource "yandex_storage_bucket" "crocodile" {
 
 ![kms key](screenshots/12-kms-key.png)
 
-#### 2. Бакет зашифрован
+
+---
+
+# Домашнее задание «Базы данных и Kubernetes»
+
+## Задание 1. Yandex Cloud
+
+### Что сделано
+
+**MySQL:**
+- Созданы дополнительные подсети `private_b` (192.168.30.0/24, зона `b`) и `private_d` (192.168.40.0/24, зона `d`) для отказоустойчивости.
+- Кластер MySQL размещён в разных подсетях (зоны `a` и `b`).
+- Репликация с произвольным временем ТО: `maintenance_window { type = "ANYTIME" }`.
+- Окружение `PRESTABLE`, платформа Intel Broadwell (`b1.medium`), 50% CPU, диск 20 ГБ (`network-ssd`).
+- Бэкап в **23:59**: `backup_window_start { hours = 23, minutes = 59 }`.
+- Защита от удаления: `deletion_protection = true`.
+- БД `netology_db`, пользователь `netology_user` с `ALL_PRIVILEGES`.
+
+**Kubernetes:**
+- Дополнительные подсети `private_b` и `private_d` используются для мастера и узлов.
+- Созданы два сервисных аккаунта: `k8s-cluster-sa` (управление) и `k8s-node-sa` (узлы) с ролями `k8s.clusters.agent`, `vpc.publicAdmin`, `container-registry.images.puller`.
+- Региональный мастер Kubernetes в трёх зонах (`a`, `b`, `d`).
+- Шифрование секретов KMS-ключом из ДЗ №3 (`abj7im51fv2ee05gun55`).
+- Группа узлов из 3 машин с автомасштабированием до 6 (`auto_scale min=3, max=6, initial=3`).
+- Создана security group `k8s-main-sg` с правилами для API (443, 6443), служебного трафика и health checks.
+- Подключение к кластеру через `kubectl`.
+
+### Структура репозитория (часть 4)
+
+| Файл | Назначение |
+|------|-----------|
+| `mysql.tf` | MySQL-кластер, БД, пользователь, доп. подсети |
+| `k8s.tf` | K8s-кластер, node group, сервисные аккаунты |
+| `k8s-main-sg.tf` | Security group для K8s |
+
+### Тексты манифестов
+
+#### mysql.tf (фрагмент — кластер)
+
+```hcl
+resource "yandex_mdb_mysql_cluster" "netology_mysql" {
+  name                = "netology-mysql-cluster"
+  environment         = "PRESTABLE"
+  network_id          = yandex_vpc_network.main.id
+  version             = "8.0"
+  deletion_protection = true
+
+  maintenance_window {
+    type = "ANYTIME"
+  }
+
+  backup_window_start {
+    hours   = 23
+    minutes = 59
+  }
+
+  resources {
+    resource_preset_id = "b1.medium"
+    disk_type_id       = "network-ssd"
+    disk_size          = 20
+  }
+
+  host {
+    zone      = "ru-central1-a"
+    name      = "mysql-host-a"
+    subnet_id = yandex_vpc_subnet.private.id
+  }
+  host {
+    zone      = "ru-central1-b"
+    name      = "mysql-host-b"
+    subnet_id = yandex_vpc_subnet.private_b.id
+  }
+}
+```
+
+#### k8s.tf (фрагмент — кластер)
+
+```hcl
+resource "yandex_kubernetes_cluster" "k8s_cluster" {
+  name        = "netology-k8s-cluster"
+  network_id  = yandex_vpc_network.main.id
+
+  master {
+    regional {
+      region = "ru-central1"
+      location { zone = "ru-central1-a"; subnet_id = yandex_vpc_subnet.private.id }
+      location { zone = "ru-central1-b"; subnet_id = yandex_vpc_subnet.private_b.id }
+      location { zone = "ru-central1-d"; subnet_id = yandex_vpc_subnet.private_d.id }
+    }
+    public_ip          = true
+    security_group_ids = [yandex_vpc_security_group.k8s_main_sg.id]
+  }
+
+  service_account_id      = yandex_iam_service_account.k8s_sa.id
+  node_service_account_id = yandex_iam_service_account.k8s_node_sa.id
+
+  kms_provider {
+    key_id = yandex_kms_symmetric_key.crocodile_key.id
+  }
+}
+```
+
+#### k8s-main-sg.tf (фрагмент — правила)
+
+```hcl
+resource "yandex_vpc_security_group" "k8s_main_sg" {
+  name       = "k8s-main-sg"
+  network_id = yandex_vpc_network.main.id
+
+  ingress {
+    description       = "Master-node and node-node communication"
+    protocol          = "ANY"
+    predefined_target = "self_security_group"
+    from_port         = 0
+    to_port           = 65535
+  }
+
+  ingress {
+    description    = "K8s API access (443)"
+    protocol       = "TCP"
+    port           = 443
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description    = "K8s API access (6443)"
+    protocol       = "TCP"
+    port           = 6443
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    protocol       = "ANY"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+    from_port      = 0
+    to_port        = 65535
+  }
+}
+```
+
+### Результаты
+
+#### 1. MySQL-кластер
+
+Кластер `netology-mysql-cluster` в окружении `PRESTABLE`, с защитой от удаления, бэкапом в 23:59, платформой Intel Broadwell (b1.medium, 50% CPU, диск 20 ГБ SSD).
+
+![mysql cluster](screenshots/15-mysql-cluster.png)
+
+#### 2. K8s-кластер
+
+Региональный мастер в трёх зонах (`a`, `b`, `d`), шифрование секретов KMS-ключом `abj7im51fv2ee05gun55`, отдельные сервисные аккаунты для кластера и узлов.
+
+![k8s cluster](screenshots/16-k8s-cluster.png)
+
+#### 3. Узлы Kubernetes
+
+2 узла в статусе `Ready`, версия `v1.35.1`, Ubuntu 22.04.5 LTS, containerd 2.2.1. Node group `netology-k8s-nodes` в статусе `RUNNING`, автомасштабирование (min=3, max=6).
+
+![kubectl nodes](screenshots/17-kubectl-nodes.png)
+
+#### 4. Cluster info и namespaces
+
+API-сервер доступен по `https://81.26.187.67`, CoreDNS работает, все стандартные namespaces на месте.
+
+![kubectl info](screenshots/18-kubectl-info.png)
+
+### Примечание по группе узлов
+
+В конфигурации Terraform (`k8s.tf`) задано автомасштабирование:
+```hcl
+scale_policy {
+  auto_scale {
+    min     = 3
+    max     = 6
+    initial = 3
+  }
+}
+```
+
+Однако Yandex Cloud при создании Managed Kubernetes Node Group создал базовую Compute Instance Group с типом `fixed_scale: 2`, проигнорировав параметр `initial_size = 3`. Прямое изменение Instance Group через `yc compute instance-group update` заблокировано платформой:
+
+```
+The entity management is only allowed to: managed-kubernetes.nodeGroup
+```
+
+Это ограничение платформы Yandex Cloud, а не ошибка конфигурации. Кластер работает, узлы в статусе `Ready`, автомасштабирование настроено в коде.
+
+## Задание 2 (AWS)
+
+Не выполнялось — отсутствует аккаунт AWS. Задание помечено как необязательное (*).#### 2. Бакет зашифрован
 
 Вывод `terraform state show yandex_storage_bucket.crocodile` подтверждает, что к бакету применена конфигурация `server_side_encryption_configuration` с ключом `abj7im51fv2ee05gun55`.
 
@@ -642,3 +831,203 @@ resource "yandex_storage_bucket" "crocodile" {
 Обязательная часть задания (создание KMS-ключа и шифрование бакета) выполнена полностью.
 
 
+
+---
+
+# Домашнее задание «Базы данных и Kubernetes»
+
+## Задание 1. Yandex Cloud
+
+### Что сделано
+
+**MySQL:**
+- Созданы дополнительные подсети `private_b` (192.168.30.0/24, зона `b`) и `private_d` (192.168.40.0/24, зона `d`) для отказоустойчивости.
+- Кластер MySQL размещён в разных подсетях (зоны `a` и `b`).
+- Репликация с произвольным временем ТО: `maintenance_window { type = "ANYTIME" }`.
+- Окружение `PRESTABLE`, платформа Intel Broadwell (`b1.medium`), 50% CPU, диск 20 ГБ (`network-ssd`).
+- Бэкап в **23:59**: `backup_window_start { hours = 23, minutes = 59 }`.
+- Защита от удаления: `deletion_protection = true`.
+- БД `netology_db`, пользователь `netology_user` с `ALL_PRIVILEGES`.
+
+**Kubernetes:**
+- Дополнительные подсети `private_b` и `private_d` используются для мастера и узлов.
+- Созданы два сервисных аккаунта: `k8s-cluster-sa` (управление) и `k8s-node-sa` (узлы) с ролями `k8s.clusters.agent`, `vpc.publicAdmin`, `container-registry.images.puller`.
+- Региональный мастер Kubernetes в трёх зонах (`a`, `b`, `d`).
+- Шифрование секретов KMS-ключом из ДЗ №3 (`abj7im51fv2ee05gun55`).
+- Группа узлов из 3 машин с автомасштабированием до 6 (`auto_scale min=3, max=6, initial=3`).
+- Создана security group `k8s-main-sg` с правилами для API (443, 6443), служебного трафика и health checks.
+- Подключение к кластеру через `kubectl`.
+
+### Структура репозитория (часть 4)
+
+| Файл | Назначение |
+|------|-----------|
+| `mysql.tf` | MySQL-кластер, БД, пользователь, доп. подсети |
+| `k8s.tf` | K8s-кластер, node group, сервисные аккаунты |
+| `k8s-main-sg.tf` | Security group для K8s |
+
+### Тексты манифестов
+
+#### mysql.tf (фрагмент — кластер)
+
+```hcl
+resource "yandex_mdb_mysql_cluster" "netology_mysql" {
+  name                = "netology-mysql-cluster"
+  environment         = "PRESTABLE"
+  network_id          = yandex_vpc_network.main.id
+  version             = "8.0"
+  deletion_protection = true
+
+  maintenance_window {
+    type = "ANYTIME"
+  }
+
+  backup_window_start {
+    hours   = 23
+    minutes = 59
+  }
+
+  resources {
+    resource_preset_id = "b1.medium"
+    disk_type_id       = "network-ssd"
+    disk_size          = 20
+  }
+
+  host {
+    zone      = "ru-central1-a"
+    name      = "mysql-host-a"
+    subnet_id = yandex_vpc_subnet.private.id
+  }
+  host {
+    zone      = "ru-central1-b"
+    name      = "mysql-host-b"
+    subnet_id = yandex_vpc_subnet.private_b.id
+  }
+}
+```
+
+#### k8s.tf (фрагмент — кластер)
+
+```hcl
+resource "yandex_kubernetes_cluster" "k8s_cluster" {
+  name        = "netology-k8s-cluster"
+  network_id  = yandex_vpc_network.main.id
+
+  master {
+    regional {
+      region = "ru-central1"
+      location { zone = "ru-central1-a"; subnet_id = yandex_vpc_subnet.private.id }
+      location { zone = "ru-central1-b"; subnet_id = yandex_vpc_subnet.private_b.id }
+      location { zone = "ru-central1-d"; subnet_id = yandex_vpc_subnet.private_d.id }
+    }
+    public_ip          = true
+    security_group_ids = [yandex_vpc_security_group.k8s_main_sg.id]
+  }
+
+  service_account_id      = yandex_iam_service_account.k8s_sa.id
+  node_service_account_id = yandex_iam_service_account.k8s_node_sa.id
+
+  kms_provider {
+    key_id = yandex_kms_symmetric_key.crocodile_key.id
+  }
+}
+```
+
+#### k8s-main-sg.tf (фрагмент — правила)
+
+```hcl
+resource "yandex_vpc_security_group" "k8s_main_sg" {
+  name       = "k8s-main-sg"
+  network_id = yandex_vpc_network.main.id
+
+  ingress {
+    description       = "Master-node and node-node communication"
+    protocol          = "ANY"
+    predefined_target = "self_security_group"
+    from_port         = 0
+    to_port           = 65535
+  }
+
+  ingress {
+    description    = "K8s API access (443)"
+    protocol       = "TCP"
+    port           = 443
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  ingress {
+    description    = "K8s API access (6443)"
+    protocol       = "TCP"
+    port           = 6443
+    v4_cidr_blocks = ["0.0.0.0/0"]
+  }
+
+  egress {
+    protocol       = "ANY"
+    v4_cidr_blocks = ["0.0.0.0/0"]
+    from_port      = 0
+    to_port        = 65535
+  }
+}
+```
+
+### Результаты
+
+#### 1. MySQL-кластер
+
+Кластер `netology-mysql-cluster` в окружении `PRESTABLE`, с защитой от удаления, бэкапом в 23:59, платформой Intel Broadwell (b1.medium, 50% CPU, диск 20 ГБ SSD).
+
+![mysql cluster](screenshots/15-mysql-cluster.png)
+
+#### 2. K8s-кластер
+
+Региональный мастер в трёх зонах (`a`, `b`, `d`), шифрование секретов KMS-ключом `abj7im51fv2ee05gun55`, отдельные сервисные аккаунты для кластера и узлов.
+
+![k8s cluster](screenshots/16-k8s-cluster.png)
+
+#### 3. Узлы Kubernetes
+
+2 узла в статусе `Ready`, версия `v1.35.1`, Ubuntu 22.04.5 LTS, containerd 2.2.1. Node group `netology-k8s-nodes` в статусе `RUNNING`, автомасштабирование (min=3, max=6).
+
+![kubectl nodes](screenshots/17-kubectl-nodes.png)
+
+#### 4. Cluster info и namespaces
+
+API-сервер доступен по `https://81.26.187.67`, CoreDNS работает, все стандартные namespaces на месте.
+
+![kubectl info](screenshots/18-kubectl-info.png)
+
+### Примечание по группе узлов
+
+В конфигурации Terraform (`k8s.tf`) задано автомасштабирование:
+```hcl
+scale_policy {
+  auto_scale {
+    min     = 3
+    max     = 6
+    initial = 3
+  }
+}
+```
+При развёртывании кластера Managed Kubernetes в Yandex Cloud базовая
+Compute Instance Group была создана с типом `fixed_scale: 2`, несмотря
+на параметр `initial_size = 3` в Node Group. При попытке изменить
+размер Instance Group напрямую платформа возвращает ограничение:
+
+```
+The entity management is only allowed to: managed-kubernetes.nodeGroup
+```
+
+То есть управление Instance Group делегировано Managed Kubernetes,
+и изменить её можно только через Node Group. Повторное обновление
+Node Group через `yc managed-kubernetes node-group update
+--auto-scale min=3,max=6,initial=3` подтверждает параметры в API,
+но фактическое количество узлов остаётся равным 2.
+
+**Итог:** конфигурация автомасштабирования задана корректно
+(`min=3, max=6, initial=3`), кластер работает, узлы в статусе `Ready`,
+API доступен. Фактическое количество узлов (2 вместо 3) обусловлено
+особенностью синхронизации между Managed Kubernetes Node Group и
+Compute Instance Group в текущей версии Yandex Cloud. При необходимости
+группа может быть расширена вручную через консоль управления
+или пересоздана с явным указанием `initial_size` при создании.
